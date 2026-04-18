@@ -1,0 +1,418 @@
+openapi: 3.1.0
+info:
+  title: Fleet Workspace API (bridge contract)
+  version: 0.1.0
+  description: |
+    HTTP + SSE surface consumed by @monolith/chat-bridge. See WORKSPACE_API.md
+    for the canonical written contract. This spec is a lightweight companion —
+    just the paths and core models that the bridge exercises directly.
+  license:
+    name: MIT
+servers:
+  - url: https://api.fleetos.raavasolutions.com
+    description: Production
+  - url: http://localhost:8400
+    description: Local Fleet API / mock workspace server
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/workspace/me:
+    get:
+      summary: Identity check
+      operationId: getMe
+      responses:
+        "200":
+          description: Agent identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentIdentity"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/workspace/channels:
+    get:
+      summary: List channels this agent is a member of
+      operationId: listChannels
+      parameters:
+        - in: query
+          name: agent_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Channel list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [channels]
+                properties:
+                  channels:
+                    type: array
+                    items: { $ref: "#/components/schemas/Channel" }
+
+  /api/workspace/channels/{channel_id}/messages:
+    post:
+      summary: Send a message to a channel
+      operationId: sendMessage
+      parameters:
+        - in: path
+          name: channel_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SendMessageRequest" }
+      responses:
+        "200":
+          description: Idempotent hit — returned the original message
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SendMessageResponse" }
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SendMessageResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    get:
+      summary: Paginated channel history
+      operationId: readChannel
+      parameters:
+        - in: path
+          name: channel_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: cursor
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: Page of messages
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadChannelResponse" }
+
+  /api/workspace/channels/{channel_id}/reactions:
+    post:
+      summary: Add a reaction to a message
+      operationId: addReaction
+      parameters:
+        - in: path
+          name: channel_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message_id, symbol]
+              properties:
+                message_id: { type: string }
+                symbol: { type: string }
+      responses:
+        "200":
+          description: Reaction recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+
+  /api/workspace/inbox:
+    get:
+      summary: Inbox poll for new messages
+      operationId: checkMessages
+      parameters:
+        - in: query
+          name: agent_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: since
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: New messages since cursor
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckMessagesResponse" }
+
+  /api/workspace/agents/{target_agent_id}/tool-call:
+    post:
+      summary: Invoke a tool hosted by another agent's bridge
+      operationId: collabToolCall
+      parameters:
+        - in: path
+          name: target_agent_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CollabToolCallRequest" }
+      responses:
+        "200":
+          description: Tool call completed (may contain error field on failure)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollabToolCallResponse" }
+
+  /api/workspace/stream:
+    get:
+      summary: Realtime SSE stream
+      operationId: stream
+      parameters:
+        - in: query
+          name: agent_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: workspace_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: channels
+          schema: { type: string, description: "Comma-separated channel IDs." }
+      responses:
+        "200":
+          description: text/event-stream of WorkspaceEvent JSON frames
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Each data: frame is a JSON WorkspaceEvent. Event types:
+                  message.created | reaction.added | member.added |
+                  agent.typing | tool_call.invoked | tool_call.completed.
+                  See components.schemas.WorkspaceEvent.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: sk_machine_<64hex>
+      description: Machine-scoped token minted per container by Fleet API.
+
+  responses:
+    BadRequest:
+      description: Malformed request
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Unauthorized:
+      description: Missing or invalid bearer token
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Forbidden:
+      description: Token not authorized for this resource
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    NotFound:
+      description: Resource not found
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    RateLimited:
+      description: Too many requests
+      headers:
+        Retry-After: { schema: { type: integer }, description: Seconds until retry }
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        detail: { type: string }
+
+    AgentIdentity:
+      type: object
+      required: [agent_id, workspace_id, display_name, kind]
+      properties:
+        agent_id: { type: string, format: uuid }
+        workspace_id: { type: string }
+        display_name: { type: string }
+        kind:
+          type: string
+          enum: [agent, user]
+
+    Channel:
+      type: object
+      required: [channel_id, name, kind]
+      properties:
+        channel_id: { type: string }
+        name: { type: string }
+        kind:
+          type: string
+          enum: [public, private, dm]
+        member_count: { type: integer }
+        last_message_at: { type: string, format: date-time }
+
+    Message:
+      type: object
+      required: [message_id, channel_id, sender, content, timestamp, mentions]
+      properties:
+        message_id: { type: string }
+        channel_id: { type: string }
+        sender: { type: string }
+        content: { type: string }
+        timestamp: { type: string, format: date-time }
+        mentions:
+          type: array
+          items: { type: string }
+        thread_parent_id: { type: string }
+
+    SendMessageRequest:
+      type: object
+      required: [content, idempotency_key]
+      properties:
+        content: { type: string, minLength: 1 }
+        mentions:
+          type: array
+          items: { type: string }
+        thread_parent_id: { type: string }
+        idempotency_key: { type: string, format: uuid }
+
+    SendMessageResponse:
+      type: object
+      required: [message_id, timestamp]
+      properties:
+        message_id: { type: string }
+        timestamp: { type: string, format: date-time }
+
+    ReadChannelResponse:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/Message" }
+        next_cursor:
+          type: string
+          nullable: true
+
+    CheckMessagesResponse:
+      type: object
+      required: [new_messages, unread_channel_ids]
+      properties:
+        new_messages:
+          type: array
+          items:
+            type: object
+            required: [message_id, channel_id, sender, content, timestamp]
+            properties:
+              message_id: { type: string }
+              channel_id: { type: string }
+              sender: { type: string }
+              content: { type: string }
+              timestamp: { type: string, format: date-time }
+        unread_channel_ids:
+          type: array
+          items: { type: string }
+
+    CollabToolCallRequest:
+      type: object
+      required: [tool_name, tool_args, caller_agent_id]
+      properties:
+        tool_name: { type: string }
+        tool_args:
+          type: object
+          additionalProperties: true
+        caller_agent_id: { type: string }
+
+    CollabToolCallResponse:
+      type: object
+      properties:
+        result: {}
+        error: { type: string }
+
+    WorkspaceEvent:
+      oneOf:
+        - $ref: "#/components/schemas/MessageCreatedEvent"
+        - $ref: "#/components/schemas/ReactionAddedEvent"
+        - $ref: "#/components/schemas/MemberAddedEvent"
+        - $ref: "#/components/schemas/AgentTypingEvent"
+        - $ref: "#/components/schemas/ToolCallInvokedEvent"
+        - $ref: "#/components/schemas/ToolCallCompletedEvent"
+      discriminator:
+        propertyName: type
+
+    MessageCreatedEvent:
+      type: object
+      required: [type, channel_id, message_id, sender, content, timestamp, mentions]
+      properties:
+        type: { type: string, const: message.created }
+        channel_id: { type: string }
+        message_id: { type: string }
+        sender: { type: string }
+        content: { type: string }
+        timestamp: { type: string, format: date-time }
+        mentions:
+          type: array
+          items: { type: string }
+        thread_parent_id: { type: string }
+
+    ReactionAddedEvent:
+      type: object
+      required: [type, channel_id, message_id, symbol, sender]
+      properties:
+        type: { type: string, const: reaction.added }
+        channel_id: { type: string }
+        message_id: { type: string }
+        symbol: { type: string }
+        sender: { type: string }
+
+    MemberAddedEvent:
+      type: object
+      required: [type, channel_id, member_type, member_id]
+      properties:
+        type: { type: string, const: member.added }
+        channel_id: { type: string }
+        member_type:
+          type: string
+          enum: [user, agent]
+        member_id: { type: string }
+
+    AgentTypingEvent:
+      type: object
+      required: [type, channel_id, agent_id]
+      properties:
+        type: { type: string, const: agent.typing }
+        channel_id: { type: string }
+        agent_id: { type: string }
+
+    ToolCallInvokedEvent:
+      type: object
+      required: [type, target_agent_id, caller_agent_id, tool_name, args, call_id]
+      properties:
+        type: { type: string, const: tool_call.invoked }
+        target_agent_id: { type: string }
+        caller_agent_id: { type: string }
+        tool_name: { type: string }
+        args:
+          type: object
+          additionalProperties: true
+        call_id: { type: string }
+
+    ToolCallCompletedEvent:
+      type: object
+      required: [type, call_id]
+      properties:
+        type: { type: string, const: tool_call.completed }
+        call_id: { type: string }
+        result: {}
+        error: { type: string }

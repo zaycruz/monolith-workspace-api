@@ -14,4 +14,5 @@ build/
 .env.local
 *.db
 .DS_Store
-uv.lock
+# NOTE: uv.lock is intentionally tracked so Dockerfile `uv sync --frozen` is
+# reproducible across builds. Do not re-add to .gitignore.

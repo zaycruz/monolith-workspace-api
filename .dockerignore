@@ -1,0 +1,40 @@
+# VCS
+.git
+.gitignore
+
+# Python runtime artifacts
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist
+build
+
+# Tooling caches
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+
+# Tests and docs — not shipped in the runtime image.
+# Note: README.md is intentionally NOT excluded because hatchling reads it
+# at wheel build time (project.readme in pyproject.toml).
+tests
+wiki
+
+# Local / secrets
+.env
+.env.local
+.env.*.local
+*.db
+
+# OS + editor
+.DS_Store
+.idea
+.vscode
+
+# Infra (not needed inside the app image)
+infra
+.github

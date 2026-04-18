@@ -1,0 +1,24 @@
+# Local terraform workspace
+.terraform/
+.terraform.tfstate.lock.info
+
+# State — remote backend only
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Plan artifacts
+*.tfplan
+plan.tfplan
+
+# Variable overrides
+*.auto.tfvars
+*.auto.tfvars.json
+terraform.tfvars
+terraform.tfvars.json
+
+# .terraform.lock.hcl IS tracked (it pins provider versions). Do not ignore.

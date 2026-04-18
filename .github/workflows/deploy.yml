@@ -1,0 +1,142 @@
+name: deploy
+
+# Security note: this workflow uses only trusted event fields (github.sha,
+# github.ref). It does not interpolate user-controllable strings such as
+# pull_request.title or head_commit.message into shell commands.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main, "feat/**"]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write  # required for AWS OIDC
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: monolith-workspace-api
+  APPRUNNER_SERVICE_ARN: ${{ secrets.APPRUNNER_SERVICE_ARN }}
+  AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+
+jobs:
+  test:
+    name: lint + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.5.11"
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: Pytest
+        env:
+          WORKSPACE_TEST_SQLITE: "1"
+          AUTH_ENABLED: "false"
+        run: uv run pytest -q
+
+  build-and-push:
+    name: build + push image
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      image_uri: ${{ steps.meta.outputs.image_uri }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Compute tags
+        id: meta
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          SHA: ${{ github.sha }}
+        run: |
+          tag_sha="${SHA:0:12}"
+          image_uri="${REGISTRY}/${ECR_REPOSITORY}:${tag_sha}"
+          echo "image_tag=${tag_sha}" >> "$GITHUB_OUTPUT"
+          echo "image_uri=${image_uri}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+            ${{ steps.meta.outputs.image_uri }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: deploy to App Runner
+    needs: build-and-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Trigger App Runner deployment
+        run: |
+          set -euo pipefail
+          op_id=$(aws apprunner start-deployment \
+            --service-arn "$APPRUNNER_SERVICE_ARN" \
+            --region "$AWS_REGION" \
+            --query OperationId --output text)
+          echo "Started App Runner deployment: $op_id"
+
+      - name: Wait for service to stabilize
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            status=$(aws apprunner describe-service \
+              --service-arn "$APPRUNNER_SERVICE_ARN" \
+              --region "$AWS_REGION" \
+              --query 'Service.Status' --output text)
+            echo "attempt $i: status=$status"
+            if [ "$status" = "RUNNING" ]; then
+              echo "deployment succeeded"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "timed out waiting for App Runner service"
+          exit 1

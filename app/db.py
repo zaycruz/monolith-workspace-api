@@ -36,6 +36,10 @@ logger = logging.getLogger("workspace.db")
 
 USE_SQLITE = os.getenv("WORKSPACE_TEST_SQLITE", "").lower() in ("1", "true", "yes")
 
+# Advisory-lock key used to serialize schema application across concurrent
+# uvicorn workers on cold start. Arbitrary but stable integer.
+_SCHEMA_LOCK_ID = 0x776B_7370_6163_6501
+
 # Lazy: imported only on the backend we're using
 _pg_pool: Any = None
 _sqlite_conn: Any = None
@@ -89,10 +93,17 @@ async def _init_postgres() -> None:
     kwargs = _parse_dsn(settings.database_url)
     logger.info("Connecting to Postgres at %s/%s", kwargs.get("host"), kwargs.get("database"))
     _pg_pool = await asyncpg.create_pool(**kwargs)
-    # Apply schema (idempotent)
+    # Apply schema under a Postgres advisory lock so concurrent uvicorn
+    # workers don't race each other on `CREATE TABLE IF NOT EXISTS`
+    # (Postgres' pg_type catalog uniqueness check is not serialized with
+    # the idempotent guard).
     async with _pg_pool.acquire() as conn:
-        for stmt in _schema_statements_postgres():
-            await conn.execute(stmt)
+        await conn.execute("SELECT pg_advisory_lock($1)", _SCHEMA_LOCK_ID)
+        try:
+            for stmt in _schema_statements_postgres():
+                await conn.execute(stmt)
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock($1)", _SCHEMA_LOCK_ID)
 
 
 async def _init_sqlite() -> None:

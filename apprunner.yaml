@@ -1,0 +1,38 @@
+# =============================================================================
+# AWS App Runner configuration reference.
+#
+# IMPORTANT: This file documents the managed-runtime configuration an App
+# Runner service would use if we deployed from *source*. We don't — the
+# production deploy path is image-based (ECR + Dockerfile at repo root),
+# provisioned by infra/terraform/main.tf.
+#
+# Keep this file for two reasons:
+#   1. It captures the runtime contract (port, command, env) in one place,
+#      near the code it describes.
+#   2. If we ever switch to source-based deploy, this is the starting point.
+#
+# When the Terraform-managed image service is in use, this file is ignored.
+# =============================================================================
+version: 1.0
+runtime: python311
+build:
+  commands:
+    pre-build: []
+    build:
+      - echo "Build handled by Dockerfile (image-based App Runner deploy)"
+run:
+  runtime-version: 3.12
+  command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 2
+  network:
+    port: 8080
+    env: PORT
+  env:
+    - name: ENVIRONMENT
+      value: production
+    # Secrets are injected at runtime via App Runner's Secrets Manager
+    # integration (see infra/terraform/main.tf). They are NOT listed here.
+    #   - SUPABASE_URL
+    #   - SUPABASE_SERVICE_ROLE_KEY
+    #   - CLERK_SECRET_KEY
+    #   - CLERK_JWKS_URL
+    #   - WORKSPACE_MACHINE_TOKEN_SIGNING_KEY

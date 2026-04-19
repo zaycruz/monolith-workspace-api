@@ -2,6 +2,39 @@
 
 Durable, human- and agent-readable docs for `monolith-workspace-api`.
 
+## Staging lane role
+
+- Owner: `engineering/integration`
+- Boundary: workspace messaging, SSE fanout, machine-token lookups, and the
+  workspace contract consumed by portal and bridge clients
+- Shared staging guidance lives in
+  [`../../../STAGING_INDEX.md`](../../../STAGING_INDEX.md),
+  [`../../../../.factory/library/environment.md`](../../../../.factory/library/environment.md),
+  and
+  [`../../../../.factory/library/release-commands.md`](../../../../.factory/library/release-commands.md)
+- This repo is **supporting**, not a first-class member of the shared Monolith
+  staging lane today. The shared lane currently documents the portal
+  `https://app-staging.thisismonolith.com` and Fleet API
+  `https://api-staging.fleetos.raavasolutions.com`; this repo's checked-in ops
+  docs still describe only the separate AWS App Runner service on
+  `https://api-workspace.raavasolutions.com`.
+- Do **not** invent a workspace-api staging hostname or assume Fleet API
+  staging is this service. If a real workspace-api staging lane is added, update
+  `OPERATIONS.md`, `infra/terraform/README.md`, and the shared staging runbooks
+  together.
+- Repo-local commands and identifiers to start from:
+  - `uv sync --dev`
+  - `./scripts/init_db.sh`
+  - `./scripts/run_dev.sh` (local dev port `8500`)
+  - `uv run pytest -q`
+  - `uv run ruff check`
+  - AWS App Runner runtime in `us-east-1`, ECR repo `monolith-workspace-api`,
+    and production domain `https://api-workspace.raavasolutions.com` from
+    [`OPERATIONS.md`](./OPERATIONS.md)
+- This checkout currently has no configured Git remote (`git remote -v` is
+  empty), so confirm the canonical remote before scripting deploy, automation,
+  or release work for this repo.
+
 | File | When to read |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Before you change any domain model or cross-service contract. |

@@ -23,6 +23,7 @@ from app.routers import (
     channels,
     dms,
     health,
+    internal,
     me,
     messages,
     stream,
@@ -100,13 +101,14 @@ async def validation_exception_handler(request, exc):  # noqa: ARG001
     )
 
 
-app.include_router(health.router)  # root-mounted probes
+app.include_router(health.router)
 app.include_router(me.router)
 app.include_router(channels.router)
 app.include_router(messages.router)
 app.include_router(dms.router)
 app.include_router(agents.router)
 app.include_router(stream.router)
+app.include_router(internal.router)
 
 
 @app.get("/api/openapi.json", include_in_schema=False)

@@ -6,7 +6,9 @@ import secrets as secrets_mod
 import uuid
 
 from fastapi import APIRouter, Depends
+from pydantic import Field
 
+from app import db
 from app.auth import require_service
 from app.db import execute, fetchrow
 from app.models import BaseModel
@@ -30,9 +32,9 @@ def _resolve_uuid(value: str) -> uuid.UUID:
 
 
 class MintMachineTokenRequest(BaseModel):
-    agent_container_id: str
-    tenant_id: str
-    workspace_id: str | None = None
+    agent_container_id: str = Field(..., min_length=1, max_length=255)
+    tenant_id: str = Field(..., min_length=1, max_length=255)
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class MintMachineTokenResponse(BaseModel):
@@ -62,10 +64,11 @@ async def mint_machine_token(
     if not existing_ws:
         await execute(
             "INSERT INTO workspaces (id, tenant_id, name, created_at) "
-            "VALUES ($1, $2, $3, NOW())",
+            "VALUES ($1, $2, $3, $4)",
             str(workspace_uuid),
             str(tenant_uuid),
             "default",
+            db.now_iso(),
         )
         logger.info(
             "Auto-created workspace %s for tenant %s", workspace_uuid, tenant_uuid
@@ -77,12 +80,13 @@ async def mint_machine_token(
     await execute(
         "INSERT INTO agent_machine_tokens "
         "(id, token_hash, agent_container_id, workspace_id, tenant_id, created_at) "
-        "VALUES ($1, $2, $3, $4, $5, NOW())",
+        "VALUES ($1, $2, $3, $4, $5, $6)",
         str(uuid.uuid4()),
         token_hash,
         str(agent_container_uuid),
         str(workspace_uuid),
         str(tenant_uuid),
+        db.now_iso(),
     )
     logger.info(
         "Minted machine token for agent %s workspace %s tenant %s",

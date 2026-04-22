@@ -38,6 +38,7 @@ logger = logging.getLogger("workspace.auth")
 _bearer = HTTPBearer(auto_error=False)
 _MACHINE_TOKEN_RE = re.compile(r"^sk_machine_[0-9a-f]{64}$")
 _SERVICE_TOKEN_RE = re.compile(r"^sk_service_[0-9a-f]{64}$")
+_DUMMY_SERVICE_TOKEN = "sk_service_" + ("0" * 64)
 
 
 @dataclass
@@ -102,13 +103,21 @@ def _is_service_token(token: str) -> bool:
 
 async def _resolve_service_token(raw: str, request: Request) -> AuthContext:
     settings = get_settings()
-    if not settings.workspace_service_token:
-        raise HTTPException(
-            status_code=401, detail={"error": "Invalid service token"}
-        )
-    token_hash = _sha256_hex(raw)
-    expected_hash = _sha256_hex(settings.workspace_service_token)
-    if not hmac.compare_digest(token_hash, expected_hash):
+
+    configured = (settings.workspace_service_token or "").strip()
+    if configured and not configured.startswith("sk_service_"):
+        configured = f"sk_service_{configured}"
+    expected = configured if _is_service_token(configured) else _DUMMY_SERVICE_TOKEN
+
+    presented_hash = _sha256_hex(raw)
+    expected_hash = _sha256_hex(expected)
+
+    is_valid = (
+        _is_service_token(raw)
+        and _is_service_token(configured)
+        and hmac.compare_digest(presented_hash, expected_hash)
+    )
+    if not is_valid:
         raise HTTPException(
             status_code=401, detail={"error": "Invalid service token"}
         )
@@ -120,7 +129,7 @@ async def _resolve_service_token(raw: str, request: Request) -> AuthContext:
     return AuthContext(
         tenant_id=tenant_id,
         identity=ServiceIdentity(service_name="fleet-api"),
-        token_prefix=token_hash[:8],
+        token_prefix=presented_hash[:8],
     )
 
 
@@ -145,7 +154,7 @@ async def _resolve_machine_token(raw: str) -> AuthContext:
     )
 
 
-def _decode_unverified_jwt(token: str) -> dict:
+def _decode_unverified_jwt(token: str) -> dict[str, object]:
     """Decode a JWT without signature verification — DEV ONLY.
 
     Used when `VERIFY_CLERK=false`. Returns the payload dict, or raises
@@ -176,25 +185,31 @@ async def _resolve_clerk_token(raw: str) -> AuthContext:
         )
 
     payload = _decode_unverified_jwt(raw)
-    clerk_user_id = payload.get("sub") or payload.get("user_id") or ""
-    if not clerk_user_id:
+    raw_clerk_user_id = payload.get("sub") or payload.get("user_id")
+    if not isinstance(raw_clerk_user_id, str) or not raw_clerk_user_id:
         raise HTTPException(
             status_code=401, detail={"error": "JWT missing sub claim"}
         )
+    clerk_user_id = raw_clerk_user_id
 
     # tenant_id comes from a Clerk custom claim. For MVP, the bridge supplies
     # `X-Tenant-Id` or `org_id`; fall back to `"default"` when both are absent
     # so dev harnesses can use throwaway tokens.
+    raw_tenant_id = payload.get("org_id") or payload.get("tenant_id")
     tenant_id = (
-        payload.get("org_id")
-        or payload.get("tenant_id")
-        or "00000000-0000-0000-0000-000000000000"
+        raw_tenant_id
+        if isinstance(raw_tenant_id, str) and raw_tenant_id
+        else "00000000-0000-0000-0000-000000000000"
     )
-    display_name = (
+    raw_display_name = (
         payload.get("name")
         or payload.get("email")
         or payload.get("preferred_username")
-        or clerk_user_id
+    )
+    display_name = (
+        raw_display_name
+        if isinstance(raw_display_name, str) and raw_display_name
+        else clerk_user_id
     )
 
     return AuthContext(

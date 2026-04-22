@@ -17,6 +17,10 @@ os.environ["WORKSPACE_TEST_SQLITE"] = "1"
 os.environ["AUTH_ENABLED"] = "true"
 os.environ["VERIFY_CLERK"] = "false"
 
+TENANT_ID = "11111111-1111-1111-1111-111111111111"
+SERVICE_TOKEN = "sk_service_" + "a" * 64
+os.environ["WORKSPACE_SERVICE_TOKEN"] = SERVICE_TOKEN
+
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -24,7 +28,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app import db  # noqa: E402
 from app.main import app  # noqa: E402
 
-TENANT_ID = "11111111-1111-1111-1111-111111111111"
 WORKSPACE_ID = "22222222-2222-2222-2222-222222222222"
 AGENT_ID_A = "33333333-3333-3333-3333-333333333333"
 AGENT_ID_B = "44444444-4444-4444-4444-444444444444"
@@ -110,3 +113,11 @@ def agent_b_headers() -> dict:
 @pytest.fixture
 def human_headers() -> dict:
     return {"Authorization": f"Bearer {_clerk_jwt(HUMAN_CLERK_ID)}"}
+
+
+@pytest.fixture
+def service_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {SERVICE_TOKEN}",
+        "X-Tenant-Id": TENANT_ID,
+    }

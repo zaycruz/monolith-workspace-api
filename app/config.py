@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # Machine tokens
     workspace_machine_token_signing_key: str = "change-me"
 
+    # Service-to-service tokens
+    workspace_service_token: str = ""
+
     # Feature flags
     auth_enabled: bool = True
 

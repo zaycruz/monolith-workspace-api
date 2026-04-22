@@ -26,7 +26,7 @@ logger = logging.getLogger("workspace.routers.dms")
 router = APIRouter(prefix="/api/workspace", tags=["DMs"])
 
 
-async def _resolve_dm_channel(auth: AuthContext, counterpart_id: str) -> str:
+async def _resolve_dm_channel(auth: AuthContext, counterpart_id: str) -> dict[str, str]:
     workspace_id = await ensure_workspace_for_tenant(auth.tenant_id)
     actor_id = auth.actor_id
     # Deterministic channel name for the pair — sort so either side resolves
@@ -40,16 +40,18 @@ async def _resolve_dm_channel(auth: AuthContext, counterpart_id: str) -> str:
         channel_name,
     )
     if row:
-        return str(row["id"])
+        return {"channel_id": str(row["id"]), "workspace_id": workspace_id}
 
     created = await create_channel(workspace_id, channel_name, None, kind="dm")
     channel_id = created["channel_id"]
     # Add both participants. We don't know whether the counterpart is a human
     # or an agent at this layer — assume agent UUID format, human otherwise.
     # TODO(contract-gap): pass counterpart kind explicitly.
-    human_id_actor = auth.identity.clerk_user_id if auth.is_human else None  # type: ignore[union-attr]
-    agent_id_actor = auth.identity.agent_container_id if auth.is_agent else None  # type: ignore[union-attr]
-    await add_member(channel_id, human_id_actor, agent_id_actor)
+    # Service auth is not a channel member; skip adding the service itself.
+    if not auth.is_service:
+        human_id_actor = auth.identity.clerk_user_id if auth.is_human else None  # type: ignore[union-attr]
+        agent_id_actor = auth.identity.agent_container_id if auth.is_agent else None  # type: ignore[union-attr]
+        await add_member(channel_id, human_id_actor, agent_id_actor)
     # Counterpart — best effort, assume agent if it looks like a UUID.
     is_uuid = len(counterpart_id) >= 32 and "-" in counterpart_id
     await add_member(
@@ -57,7 +59,7 @@ async def _resolve_dm_channel(auth: AuthContext, counterpart_id: str) -> str:
         human_id=None if is_uuid else counterpart_id,
         agent_container_id=counterpart_id if is_uuid else None,
     )
-    return channel_id
+    return {"channel_id": channel_id, "workspace_id": workspace_id}
 
 
 @router.post(
@@ -69,7 +71,8 @@ async def send_dm(
     body: SendMessageRequest,
     auth: AuthContext = Depends(get_auth_context),
 ) -> SendMessageResponse:
-    channel_id = await _resolve_dm_channel(auth, counterpart_id)
+    resolved = await _resolve_dm_channel(auth, counterpart_id)
+    channel_id = resolved["channel_id"]
     result = await send_message(
         auth=auth,
         channel_id=channel_id,
@@ -91,7 +94,16 @@ async def read_dm(
     limit: int = 50,
     auth: AuthContext = Depends(get_auth_context),
 ) -> dict:
-    channel_id = await _resolve_dm_channel(auth, counterpart_id)
+    resolved = await _resolve_dm_channel(auth, counterpart_id)
+    channel_id = resolved["channel_id"]
     if not channel_id:
         raise HTTPException(404, detail={"error": "DM channel not found"})
     return await read_channel(channel_id, cursor, limit)
+
+
+@router.get("/dms/{counterpart_id}")
+async def get_dm(
+    counterpart_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+) -> dict:
+    return await _resolve_dm_channel(auth, counterpart_id)

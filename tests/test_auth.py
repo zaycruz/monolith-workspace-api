@@ -42,3 +42,27 @@ def test_human_me_identity(client, human_headers):
     data = r.json()
     assert data["kind"] == "user"
     assert data["display_name"].startswith("display-")
+
+
+def test_invalid_service_token_rejected(client):
+    r = client.get(
+        "/api/workspace/dms/some-counterpart",
+        headers={"Authorization": "Bearer sk_service_" + "0" * 64, "X-Tenant-Id": "11111111-1111-1111-1111-111111111111"},
+    )
+    assert r.status_code == 401
+    assert "Invalid" in r.json()["error"]
+
+
+def test_service_token_missing_tenant_rejected(client, service_headers):
+    headers = {k: v for k, v in service_headers.items() if k.lower() != "x-tenant-id"}
+    r = client.get("/api/workspace/dms/some-counterpart", headers=headers)
+    assert r.status_code == 401
+    assert "Missing X-Tenant-Id" in r.json()["error"]
+
+
+def test_service_dm_resolve(client, service_headers):
+    r = client.get("/api/workspace/dms/some-counterpart", headers=service_headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["channel_id"]
+    assert data["workspace_id"]

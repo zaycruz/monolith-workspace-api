@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import re
@@ -36,6 +37,7 @@ logger = logging.getLogger("workspace.auth")
 
 _bearer = HTTPBearer(auto_error=False)
 _MACHINE_TOKEN_RE = re.compile(r"^sk_machine_[0-9a-f]{64}$")
+_SERVICE_TOKEN_RE = re.compile(r"^sk_service_[0-9a-f]{64}$")
 
 
 @dataclass
@@ -53,9 +55,15 @@ class AgentIdentityCtx:
 
 
 @dataclass
+class ServiceIdentity:
+    kind: Literal["service"] = "service"
+    service_name: str = ""
+
+
+@dataclass
 class AuthContext:
     tenant_id: str
-    identity: HumanIdentity | AgentIdentityCtx
+    identity: HumanIdentity | AgentIdentityCtx | ServiceIdentity
     token_prefix: str  # first 8 of sha256(token) for audit
 
     @property
@@ -67,10 +75,16 @@ class AuthContext:
         return isinstance(self.identity, HumanIdentity)
 
     @property
+    def is_service(self) -> bool:
+        return isinstance(self.identity, ServiceIdentity)
+
+    @property
     def actor_id(self) -> str:
-        """Single-column identifier for the caller — agent_container_id or clerk_user_id."""
+        """Single-column identifier for the caller — agent_container_id, clerk_user_id, or service_name."""
         if isinstance(self.identity, AgentIdentityCtx):
             return self.identity.agent_container_id
+        if isinstance(self.identity, ServiceIdentity):
+            return self.identity.service_name
         return self.identity.clerk_user_id
 
 
@@ -80,6 +94,34 @@ def _sha256_hex(value: str) -> str:
 
 def _is_machine_token(token: str) -> bool:
     return bool(_MACHINE_TOKEN_RE.match(token))
+
+
+def _is_service_token(token: str) -> bool:
+    return bool(_SERVICE_TOKEN_RE.match(token))
+
+
+async def _resolve_service_token(raw: str, request: Request) -> AuthContext:
+    settings = get_settings()
+    if not settings.workspace_service_token:
+        raise HTTPException(
+            status_code=401, detail={"error": "Invalid service token"}
+        )
+    token_hash = _sha256_hex(raw)
+    expected_hash = _sha256_hex(settings.workspace_service_token)
+    if not hmac.compare_digest(token_hash, expected_hash):
+        raise HTTPException(
+            status_code=401, detail={"error": "Invalid service token"}
+        )
+    tenant_id = request.headers.get("x-tenant-id", "")
+    if not tenant_id:
+        raise HTTPException(
+            status_code=401, detail={"error": "Missing X-Tenant-Id header"}
+        )
+    return AuthContext(
+        tenant_id=tenant_id,
+        identity=ServiceIdentity(service_name="fleet-api"),
+        token_prefix=token_hash[:8],
+    )
 
 
 async def _resolve_machine_token(raw: str) -> AuthContext:
@@ -190,6 +232,8 @@ async def get_auth_context(
     token = credentials.credentials.strip()
     if _is_machine_token(token):
         return await _resolve_machine_token(token)
+    if _is_service_token(token):
+        return await _resolve_service_token(token, request)
     return await _resolve_clerk_token(token)
 
 
@@ -197,5 +241,13 @@ async def require_agent(auth: AuthContext = Depends(get_auth_context)) -> AuthCo
     if not auth.is_agent:
         raise HTTPException(
             status_code=403, detail={"error": "Agent token required"}
+        )
+    return auth
+
+
+async def require_service(auth: AuthContext = Depends(get_auth_context)) -> AuthContext:
+    if not auth.is_service:
+        raise HTTPException(
+            status_code=403, detail={"error": "Service token required"}
         )
     return auth

@@ -71,6 +71,11 @@ async def send_dm(
     body: SendMessageRequest,
     auth: AuthContext = Depends(get_auth_context),
 ) -> SendMessageResponse:
+    if auth.is_service:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "Service tokens cannot send messages"},
+        )
     resolved = await _resolve_dm_channel(auth, counterpart_id)
     channel_id = resolved["channel_id"]
     result = await send_message(

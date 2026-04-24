@@ -5,11 +5,11 @@ import logging
 import secrets as secrets_mod
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import Field
 
 from app import db
-from app.auth import require_service
+from app.auth import AuthContext, require_service
 from app.db import execute, fetchrow
 from app.models import BaseModel
 
@@ -45,8 +45,13 @@ class MintMachineTokenResponse(BaseModel):
 @router.post("/machine-tokens", response_model=MintMachineTokenResponse)
 async def mint_machine_token(
     body: MintMachineTokenRequest,
-    auth=Depends(require_service),
+    auth: AuthContext = Depends(require_service),
 ):
+    if auth.tenant_id != body.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "Tenant mismatch: cannot mint tokens for another tenant"},
+        )
     tenant_uuid = _resolve_uuid(body.tenant_id)
     agent_container_uuid = _resolve_uuid(body.agent_container_id)
 

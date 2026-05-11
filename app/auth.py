@@ -41,6 +41,7 @@ _bearer = HTTPBearer(auto_error=False)
 _MACHINE_TOKEN_RE = re.compile(r"^sk_machine_[0-9a-f]{64}$")
 _SERVICE_TOKEN_RE = re.compile(r"^sk_service_[0-9a-f]{64}$")
 _DUMMY_SERVICE_TOKEN = "sk_service_" + ("0" * 64)
+_CLERK_JWKS_TIMEOUT_SECONDS = 3.0
 _JWKS_CLIENTS: dict[str, jwt.PyJWKClient] = {}
 
 
@@ -178,7 +179,7 @@ def _decode_unverified_jwt(token: str) -> dict[str, object]:
 def _get_clerk_jwks_client(jwks_url: str) -> jwt.PyJWKClient:
     client = _JWKS_CLIENTS.get(jwks_url)
     if client is None:
-        client = jwt.PyJWKClient(jwks_url)
+        client = jwt.PyJWKClient(jwks_url, timeout=_CLERK_JWKS_TIMEOUT_SECONDS)
         _JWKS_CLIENTS[jwks_url] = client
     return client
 

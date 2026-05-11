@@ -36,7 +36,14 @@ def _verified_settings(issuer: str):
     )
 
 
-def _verified_jwt(private_key, issuer: str, user_id: str = "user_verified") -> str:
+def _verified_jwt(
+    private_key,
+    issuer: str,
+    user_id: str = "user_verified",
+    *,
+    iat_offset_seconds: int = 0,
+    expires_in_seconds: int = 300,
+) -> str:
     now = int(time.time())
     return jwt.encode(
         {
@@ -44,8 +51,8 @@ def _verified_jwt(private_key, issuer: str, user_id: str = "user_verified") -> s
             "tenant_id": TENANT_ID,
             "name": f"display-{user_id}",
             "iss": issuer,
-            "iat": now,
-            "exp": now + 300,
+            "iat": now + iat_offset_seconds,
+            "exp": now + expires_in_seconds,
         },
         private_key,
         algorithm="RS256",
@@ -125,6 +132,29 @@ def test_verified_clerk_jwt_rejects_wrong_issuer(client, monkeypatch):
         "get_settings",
         lambda: _verified_settings("https://clerk.example.test"),
     )
+    monkeypatch.setattr(
+        auth_module,
+        "_get_clerk_jwks_client",
+        lambda _url: _FakeJwksClient(public_key),
+    )
+
+    r = client.get("/api/workspace/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 401
+    assert r.json()["error"] == "Invalid Clerk JWT"
+
+
+def test_verified_clerk_jwt_rejects_expired_token(client, monkeypatch):
+    issuer = "https://clerk.example.test"
+    private_key, public_key = _rsa_keypair()
+    token = _verified_jwt(
+        private_key,
+        issuer,
+        user_id="user_expired",
+        iat_offset_seconds=-600,
+        expires_in_seconds=-60,
+    )
+    monkeypatch.setattr(auth_module, "get_settings", lambda: _verified_settings(issuer))
     monkeypatch.setattr(
         auth_module,
         "_get_clerk_jwks_client",

@@ -80,6 +80,14 @@ Two token kinds are accepted on `Authorization: Bearer <token>`:
 The dependency `get_auth_context()` returns an `AuthContext` carrying
 `tenant_id` plus a discriminated `identity` (human vs agent).
 
+For production Clerk verification, set:
+
+```bash
+VERIFY_CLERK=true
+CLERK_JWKS_URL=https://clerk.thisismonolith.com/.well-known/jwks.json
+CLERK_ISSUER=https://clerk.thisismonolith.com
+```
+
 ## Endpoints
 
 | Method | Path | Source of truth |
@@ -114,8 +122,9 @@ comment (`: heartbeat\n\n`) every 15s. All types match the openapi
 
 ## Known deferred items
 
-- **Production Clerk JWKS verification** — `VERIFY_CLERK=false` is MVP-only.
-  Wire `CLERK_JWKS_URL` + `CLERK_ISSUER` and verify before shipping to prod.
+- **Production Clerk env rollout** — JWKS verification is implemented, but
+  production must set `VERIFY_CLERK=true`, `CLERK_JWKS_URL`, and `CLERK_ISSUER`
+  only after staging validation with a real Clerk session.
 - **Redis pub/sub for multi-replica SSE** — current fanout is in-process
   (`app/event_bus.py`). Single-replica is fine for MVP; multi-replica needs
   Redis or NATS so every instance sees every publish.

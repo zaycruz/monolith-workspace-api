@@ -16,6 +16,10 @@ def _ensure_sqlite_now_function() -> None:
     asyncio.run(db._sqlite_conn.create_function("NOW", 0, db.now_iso))
 
 
+def _service_headers_for(service_headers: dict[str, str], tenant_id: str) -> dict[str, str]:
+    return {**service_headers, "X-Tenant-Id": tenant_id}
+
+
 def test_mint_machine_token_requires_service_auth(client):
     payload = {
         "agent_container_id": "agent-no-auth",
@@ -35,7 +39,11 @@ def test_mint_machine_token_returns_machine_token_shape(client, service_headers)
         "tenant_id": "tenant-shape",
     }
 
-    r = client.post("/internal/machine-tokens", json=payload, headers=service_headers)
+    r = client.post(
+        "/internal/machine-tokens",
+        json=payload,
+        headers=_service_headers_for(service_headers, payload["tenant_id"]),
+    )
 
     assert r.status_code == 200
     data = r.json()
@@ -51,7 +59,11 @@ def test_mint_machine_token_auto_creates_workspace(client, service_headers):
         "tenant_id": tenant_id,
     }
 
-    r = client.post("/internal/machine-tokens", json=payload, headers=service_headers)
+    r = client.post(
+        "/internal/machine-tokens",
+        json=payload,
+        headers=_service_headers_for(service_headers, tenant_id),
+    )
     assert r.status_code == 200
 
     expected_workspace_id = str(
@@ -72,7 +84,11 @@ def test_mint_machine_token_persists_token_hash(client, service_headers):
         "workspace_id": "workspace-store-hash",
     }
 
-    r = client.post("/internal/machine-tokens", json=payload, headers=service_headers)
+    r = client.post(
+        "/internal/machine-tokens",
+        json=payload,
+        headers=_service_headers_for(service_headers, payload["tenant_id"]),
+    )
 
     assert r.status_code == 200
     data = r.json()

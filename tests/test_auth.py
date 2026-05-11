@@ -3,6 +3,60 @@ agent path vs human path resolved correctly."""
 
 from __future__ import annotations
 
+import time
+from types import SimpleNamespace
+
+import jwt
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+from app import auth as auth_module
+from tests.conftest import TENANT_ID
+
+
+class _FakeSigningKey:
+    def __init__(self, key):
+        self.key = key
+
+
+class _FakeJwksClient:
+    def __init__(self, key):
+        self._key = key
+
+    def get_signing_key_from_jwt(self, _token):
+        return _FakeSigningKey(self._key)
+
+
+def _verified_settings(issuer: str):
+    return SimpleNamespace(
+        auth_enabled=True,
+        clerk_issuer=issuer,
+        clerk_jwks_url="https://clerk.example.test/.well-known/jwks.json",
+        verify_clerk=True,
+        workspace_service_token="",
+    )
+
+
+def _verified_jwt(private_key, issuer: str, user_id: str = "user_verified") -> str:
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "sub": user_id,
+            "tenant_id": TENANT_ID,
+            "name": f"display-{user_id}",
+            "iss": issuer,
+            "iat": now,
+            "exp": now + 300,
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "test-key"},
+    )
+
+
+def _rsa_keypair():
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return private_key, private_key.public_key()
+
 
 def test_missing_bearer_rejected(client):
     r = client.get("/api/workspace/me")
@@ -42,6 +96,64 @@ def test_human_me_identity(client, human_headers):
     data = r.json()
     assert data["kind"] == "user"
     assert data["display_name"].startswith("display-")
+
+
+def test_verified_clerk_jwt_me_identity(client, monkeypatch):
+    issuer = "https://clerk.example.test"
+    private_key, public_key = _rsa_keypair()
+    token = _verified_jwt(private_key, issuer)
+    monkeypatch.setattr(auth_module, "get_settings", lambda: _verified_settings(issuer))
+    monkeypatch.setattr(
+        auth_module,
+        "_get_clerk_jwks_client",
+        lambda _url: _FakeJwksClient(public_key),
+    )
+
+    r = client.get("/api/workspace/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["kind"] == "user"
+    assert data["display_name"] == "display-user_verified"
+
+
+def test_verified_clerk_jwt_rejects_wrong_issuer(client, monkeypatch):
+    private_key, public_key = _rsa_keypair()
+    token = _verified_jwt(private_key, "https://wrong-issuer.example.test")
+    monkeypatch.setattr(
+        auth_module,
+        "get_settings",
+        lambda: _verified_settings("https://clerk.example.test"),
+    )
+    monkeypatch.setattr(
+        auth_module,
+        "_get_clerk_jwks_client",
+        lambda _url: _FakeJwksClient(public_key),
+    )
+
+    r = client.get("/api/workspace/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 401
+    assert r.json()["error"] == "Invalid Clerk JWT"
+
+
+def test_verified_clerk_requires_jwks_and_issuer(client, monkeypatch, human_headers):
+    monkeypatch.setattr(
+        auth_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            auth_enabled=True,
+            clerk_issuer="",
+            clerk_jwks_url="",
+            verify_clerk=True,
+            workspace_service_token="",
+        ),
+    )
+
+    r = client.get("/api/workspace/me", headers=human_headers)
+
+    assert r.status_code == 500
+    assert r.json()["error"] == "Clerk verification is not configured"
 
 
 def test_invalid_service_token_rejected(client):

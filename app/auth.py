@@ -23,10 +23,12 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Literal
 
+import jwt
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -39,6 +41,7 @@ _bearer = HTTPBearer(auto_error=False)
 _MACHINE_TOKEN_RE = re.compile(r"^sk_machine_[0-9a-f]{64}$")
 _SERVICE_TOKEN_RE = re.compile(r"^sk_service_[0-9a-f]{64}$")
 _DUMMY_SERVICE_TOKEN = "sk_service_" + ("0" * 64)
+_JWKS_CLIENTS: dict[str, jwt.PyJWKClient] = {}
 
 
 @dataclass
@@ -172,19 +175,58 @@ def _decode_unverified_jwt(token: str) -> dict[str, object]:
         ) from exc
 
 
+def _get_clerk_jwks_client(jwks_url: str) -> jwt.PyJWKClient:
+    client = _JWKS_CLIENTS.get(jwks_url)
+    if client is None:
+        client = jwt.PyJWKClient(jwks_url)
+        _JWKS_CLIENTS[jwks_url] = client
+    return client
+
+
+def _decode_verified_clerk_jwt(token: str) -> dict[str, object]:
+    settings = get_settings()
+    jwks_url = settings.clerk_jwks_url.strip()
+    issuer = (
+        settings.clerk_issuer or os.getenv("CLERK_JWT_ISSUER", "")
+    ).strip().rstrip("/")
+    if not jwks_url or not issuer:
+        logger.error(
+            "Clerk verification is enabled but CLERK_JWKS_URL or CLERK_ISSUER is missing"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Clerk verification is not configured"},
+        )
+
+    try:
+        signing_key = _get_clerk_jwks_client(jwks_url).get_signing_key_from_jwt(token)
+        return jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            issuer=issuer,
+            options={"verify_aud": False},
+        )
+    except jwt.PyJWKClientError as exc:
+        status_code = 503 if "fetch" in str(exc).lower() else 401
+        detail = "Clerk JWKS unavailable" if status_code == 503 else "Invalid Clerk JWT"
+        logger.warning("Clerk JWKS verification failed: %s", exc)
+        raise HTTPException(status_code=status_code, detail={"error": detail}) from exc
+    except jwt.InvalidTokenError as exc:
+        logger.warning("Clerk JWT rejected: %s", exc)
+        raise HTTPException(
+            status_code=401, detail={"error": "Invalid Clerk JWT"}
+        ) from exc
+
+
 async def _resolve_clerk_token(raw: str) -> AuthContext:
     settings = get_settings()
 
-    if settings.verify_clerk:
-        # TODO(contract-gap): full JWKS verification. Fetch CLERK_JWKS_URL,
-        # cache keys, verify signature + iss + exp with PyJWT. Not needed for
-        # MVP per scaffold brief.
-        raise HTTPException(
-            status_code=501,
-            detail={"error": "Production Clerk JWKS verification not wired yet"},
-        )
-
-    payload = _decode_unverified_jwt(raw)
+    payload = (
+        _decode_verified_clerk_jwt(raw)
+        if settings.verify_clerk
+        else _decode_unverified_jwt(raw)
+    )
     raw_clerk_user_id = payload.get("sub") or payload.get("user_id")
     if not isinstance(raw_clerk_user_id, str) or not raw_clerk_user_id:
         raise HTTPException(

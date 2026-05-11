@@ -7,6 +7,7 @@ import time
 from types import SimpleNamespace
 
 import jwt
+import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from app import auth as auth_module
@@ -24,6 +25,14 @@ class _FakeJwksClient:
 
     def get_signing_key_from_jwt(self, _token):
         return _FakeSigningKey(self._key)
+
+
+def _patch_jwks_client(monkeypatch, public_key, expected_url: str):
+    def _get_client(jwks_url: str):
+        assert jwks_url == expected_url
+        return _FakeJwksClient(public_key)
+
+    monkeypatch.setattr(auth_module, "_get_clerk_jwks_client", _get_client)
 
 
 def _verified_settings(issuer: str):
@@ -109,12 +118,9 @@ def test_verified_clerk_jwt_me_identity(client, monkeypatch):
     issuer = "https://clerk.example.test"
     private_key, public_key = _rsa_keypair()
     token = _verified_jwt(private_key, issuer)
-    monkeypatch.setattr(auth_module, "get_settings", lambda: _verified_settings(issuer))
-    monkeypatch.setattr(
-        auth_module,
-        "_get_clerk_jwks_client",
-        lambda _url: _FakeJwksClient(public_key),
-    )
+    settings = _verified_settings(issuer)
+    monkeypatch.setattr(auth_module, "get_settings", lambda: settings)
+    _patch_jwks_client(monkeypatch, public_key, settings.clerk_jwks_url)
 
     r = client.get("/api/workspace/me", headers={"Authorization": f"Bearer {token}"})
 
@@ -127,16 +133,9 @@ def test_verified_clerk_jwt_me_identity(client, monkeypatch):
 def test_verified_clerk_jwt_rejects_wrong_issuer(client, monkeypatch):
     private_key, public_key = _rsa_keypair()
     token = _verified_jwt(private_key, "https://wrong-issuer.example.test")
-    monkeypatch.setattr(
-        auth_module,
-        "get_settings",
-        lambda: _verified_settings("https://clerk.example.test"),
-    )
-    monkeypatch.setattr(
-        auth_module,
-        "_get_clerk_jwks_client",
-        lambda _url: _FakeJwksClient(public_key),
-    )
+    settings = _verified_settings("https://clerk.example.test")
+    monkeypatch.setattr(auth_module, "get_settings", lambda: settings)
+    _patch_jwks_client(monkeypatch, public_key, settings.clerk_jwks_url)
 
     r = client.get("/api/workspace/me", headers={"Authorization": f"Bearer {token}"})
 
@@ -154,12 +153,9 @@ def test_verified_clerk_jwt_rejects_expired_token(client, monkeypatch):
         iat_offset_seconds=-600,
         expires_in_seconds=-60,
     )
-    monkeypatch.setattr(auth_module, "get_settings", lambda: _verified_settings(issuer))
-    monkeypatch.setattr(
-        auth_module,
-        "_get_clerk_jwks_client",
-        lambda _url: _FakeJwksClient(public_key),
-    )
+    settings = _verified_settings(issuer)
+    monkeypatch.setattr(auth_module, "get_settings", lambda: settings)
+    _patch_jwks_client(monkeypatch, public_key, settings.clerk_jwks_url)
 
     r = client.get("/api/workspace/me", headers={"Authorization": f"Bearer {token}"})
 
@@ -167,14 +163,24 @@ def test_verified_clerk_jwt_rejects_expired_token(client, monkeypatch):
     assert r.json()["error"] == "Invalid Clerk JWT"
 
 
-def test_verified_clerk_requires_jwks_and_issuer(client, monkeypatch, human_headers):
+@pytest.mark.parametrize(
+    ("issuer", "jwks_url"),
+    [
+        ("", "https://clerk.example.test/.well-known/jwks.json"),
+        ("https://clerk.example.test", ""),
+        ("", ""),
+    ],
+)
+def test_verified_clerk_requires_jwks_and_issuer(
+    client, monkeypatch, human_headers, issuer, jwks_url
+):
     monkeypatch.setattr(
         auth_module,
         "get_settings",
         lambda: SimpleNamespace(
             auth_enabled=True,
-            clerk_issuer="",
-            clerk_jwks_url="",
+            clerk_issuer=issuer,
+            clerk_jwks_url=jwks_url,
             verify_clerk=True,
             workspace_service_token="",
         ),

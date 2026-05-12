@@ -127,31 +127,24 @@ async def revoke_machine_tokens(
     tenant_uuid = _resolve_uuid(auth.tenant_id)
     agent_container_uuid = _resolve_uuid(agent_container_id)
 
-    live_rows = await fetch(
-        "SELECT workspace_id FROM agent_machine_tokens "
-        "WHERE agent_container_id = $1 AND tenant_id = $2 AND revoked_at IS NULL "
-        "ORDER BY workspace_id",
+    revoked_rows = await fetch(
+        "UPDATE agent_machine_tokens SET revoked_at = $1 "
+        "WHERE agent_container_id = $2 AND tenant_id = $3 AND revoked_at IS NULL "
+        "RETURNING workspace_id",
+        db.now_iso(),
         str(agent_container_uuid),
         str(tenant_uuid),
     )
-    if live_rows:
-        await execute(
-            "UPDATE agent_machine_tokens SET revoked_at = $1 "
-            "WHERE agent_container_id = $2 AND tenant_id = $3 AND revoked_at IS NULL",
-            db.now_iso(),
-            str(agent_container_uuid),
-            str(tenant_uuid),
-        )
-    workspace_ids = sorted({str(row["workspace_id"]) for row in live_rows})
+    workspace_ids = sorted({str(row["workspace_id"]) for row in revoked_rows})
 
     logger.info(
         "Revoked %s machine token(s) for agent %s tenant %s",
-        len(live_rows),
+        len(revoked_rows),
         agent_container_uuid,
         tenant_uuid,
     )
     return RevokeMachineTokenResponse(
         agent_container_id=str(agent_container_uuid),
-        revoked_count=len(live_rows),
+        revoked_count=len(revoked_rows),
         workspace_ids=workspace_ids,
     )

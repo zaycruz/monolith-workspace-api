@@ -49,6 +49,12 @@ def test_mint_machine_token_returns_machine_token_shape(client, service_headers)
     data = r.json()
     assert re.fullmatch(r"sk_machine_[0-9a-f]{64}", data["token"])
     assert data["token_hash"] == hashlib.sha256(data["token"].encode()).hexdigest()
+    assert data["workspace_id"] == str(
+        uuid.uuid5(internal._INTERNAL_NAMESPACE, f"workspace:{payload['tenant_id']}:default")
+    )
+    assert data["agent_container_id"] == str(
+        uuid.uuid5(internal._INTERNAL_NAMESPACE, payload["agent_container_id"])
+    )
 
 
 def test_mint_machine_token_auto_creates_workspace(client, service_headers):
@@ -102,4 +108,97 @@ def test_mint_machine_token_persists_token_hash(client, service_headers):
     )
     assert row is not None
     assert row["token_hash"] == token_hash
+    assert row["revoked_at"] is None
+
+
+def test_revoke_machine_tokens_requires_service_auth(client):
+    r = client.delete("/internal/machine-tokens/agent-no-auth")
+
+    assert r.status_code == 401
+    assert r.json()["error"] == "Missing Authorization header"
+
+
+def test_revoke_machine_tokens_marks_live_tokens_revoked(client, service_headers):
+    _ensure_sqlite_now_function()
+    tenant_id = "tenant-revoke"
+    agent_container_id = "agent-revoke"
+    payload = {
+        "agent_container_id": agent_container_id,
+        "tenant_id": tenant_id,
+    }
+    headers = _service_headers_for(service_headers, tenant_id)
+
+    first = client.post("/internal/machine-tokens", json=payload, headers=headers)
+    second = client.post("/internal/machine-tokens", json=payload, headers=headers)
+    other = client.post(
+        "/internal/machine-tokens",
+        json={**payload, "agent_container_id": "agent-keep"},
+        headers=headers,
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert other.status_code == 200
+
+    r = client.delete(f"/internal/machine-tokens/{agent_container_id}", headers=headers)
+
+    assert r.status_code == 200
+    data = r.json()
+    expected_agent_id = str(uuid.uuid5(internal._INTERNAL_NAMESPACE, agent_container_id))
+    expected_workspace_id = str(
+        uuid.uuid5(internal._INTERNAL_NAMESPACE, f"workspace:{tenant_id}:default")
+    )
+    assert data == {
+        "agent_container_id": expected_agent_id,
+        "revoked_count": 2,
+        "workspace_ids": [expected_workspace_id],
+    }
+
+    rows = asyncio.run(
+        db.fetch(
+            "SELECT token_hash, revoked_at FROM agent_machine_tokens "
+            "WHERE agent_container_id = $1 ORDER BY token_hash",
+            expected_agent_id,
+        )
+    )
+    assert len(rows) == 2
+    assert all(row["revoked_at"] is not None for row in rows)
+
+    kept_agent_id = str(uuid.uuid5(internal._INTERNAL_NAMESPACE, "agent-keep"))
+    kept_row = asyncio.run(
+        db.fetchrow(
+            "SELECT revoked_at FROM agent_machine_tokens WHERE agent_container_id = $1",
+            kept_agent_id,
+        )
+    )
+    assert kept_row is not None
+    assert kept_row["revoked_at"] is None
+
+
+def test_revoke_machine_tokens_is_tenant_scoped(client, service_headers):
+    _ensure_sqlite_now_function()
+    payload = {
+        "agent_container_id": "agent-tenant-scope",
+        "tenant_id": "tenant-owner",
+    }
+    owner_headers = _service_headers_for(service_headers, payload["tenant_id"])
+    wrong_tenant_headers = _service_headers_for(service_headers, "tenant-other")
+
+    minted = client.post("/internal/machine-tokens", json=payload, headers=owner_headers)
+    assert minted.status_code == 200
+
+    r = client.delete(
+        f"/internal/machine-tokens/{payload['agent_container_id']}",
+        headers=wrong_tenant_headers,
+    )
+
+    assert r.status_code == 200
+    assert r.json()["revoked_count"] == 0
+
+    row = asyncio.run(
+        db.fetchrow(
+            "SELECT revoked_at FROM agent_machine_tokens WHERE token_hash = $1",
+            minted.json()["token_hash"],
+        )
+    )
+    assert row is not None
     assert row["revoked_at"] is None

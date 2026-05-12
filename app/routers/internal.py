@@ -10,7 +10,7 @@ from pydantic import Field
 
 from app import db
 from app.auth import AuthContext, require_service
-from app.db import execute, fetchrow
+from app.db import execute, fetch, fetchrow
 from app.models import BaseModel
 
 logger = logging.getLogger("workspace.internal")
@@ -40,6 +40,14 @@ class MintMachineTokenRequest(BaseModel):
 class MintMachineTokenResponse(BaseModel):
     token: str
     token_hash: str
+    workspace_id: str
+    agent_container_id: str
+
+
+class RevokeMachineTokenResponse(BaseModel):
+    agent_container_id: str
+    revoked_count: int
+    workspace_ids: list[str]
 
 
 @router.post("/machine-tokens", response_model=MintMachineTokenResponse)
@@ -100,4 +108,50 @@ async def mint_machine_token(
         tenant_uuid,
     )
 
-    return MintMachineTokenResponse(token=raw_token, token_hash=token_hash)
+    return MintMachineTokenResponse(
+        token=raw_token,
+        token_hash=token_hash,
+        workspace_id=str(workspace_uuid),
+        agent_container_id=str(agent_container_uuid),
+    )
+
+
+@router.delete(
+    "/machine-tokens/{agent_container_id}",
+    response_model=RevokeMachineTokenResponse,
+)
+async def revoke_machine_tokens(
+    agent_container_id: str,
+    auth: AuthContext = Depends(require_service),
+):
+    tenant_uuid = _resolve_uuid(auth.tenant_id)
+    agent_container_uuid = _resolve_uuid(agent_container_id)
+
+    live_rows = await fetch(
+        "SELECT workspace_id FROM agent_machine_tokens "
+        "WHERE agent_container_id = $1 AND tenant_id = $2 AND revoked_at IS NULL "
+        "ORDER BY workspace_id",
+        str(agent_container_uuid),
+        str(tenant_uuid),
+    )
+    if live_rows:
+        await execute(
+            "UPDATE agent_machine_tokens SET revoked_at = $1 "
+            "WHERE agent_container_id = $2 AND tenant_id = $3 AND revoked_at IS NULL",
+            db.now_iso(),
+            str(agent_container_uuid),
+            str(tenant_uuid),
+        )
+    workspace_ids = sorted({str(row["workspace_id"]) for row in live_rows})
+
+    logger.info(
+        "Revoked %s machine token(s) for agent %s tenant %s",
+        len(live_rows),
+        agent_container_uuid,
+        tenant_uuid,
+    )
+    return RevokeMachineTokenResponse(
+        agent_container_id=str(agent_container_uuid),
+        revoked_count=len(live_rows),
+        workspace_ids=workspace_ids,
+    )

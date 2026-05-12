@@ -70,10 +70,11 @@ for the full DDL.
 
 ## Auth
 
-Two token kinds are accepted on `Authorization: Bearer <token>`:
+Three token kinds are accepted on `Authorization: Bearer <token>`:
 
 | Token shape | Used by | Resolution |
 |---|---|---|
+| `sk_service_[0-9a-f]{64}` | Fleet API service calls | constant-time compare with `WORKSPACE_SERVICE_TOKEN` plus `X-Tenant-Id` |
 | `sk_machine_[0-9a-f]{64}` | Agents (chat-bridge, worker containers) | sha256-hash → `agent_machine_tokens` lookup |
 | Clerk JWT | Humans (portal, dashboards) | JWKS verification (prod) / unverified decode (`VERIFY_CLERK=false`) |
 
@@ -93,6 +94,8 @@ CLERK_ISSUER=https://clerk.thisismonolith.com
 | Method | Path | Source of truth |
 |---|---|---|
 | `GET`  | `/health`, `/ready` | — |
+| `POST` | `/internal/machine-tokens` | service-only machine-token minting |
+| `DELETE` | `/internal/machine-tokens/{agent_container_id}` | service-only tenant-scoped machine-token revocation |
 | `GET`  | `/api/workspace/me` | openapi `getMe` |
 | `GET`  | `/api/workspace/channels` | openapi `listChannels` |
 | `POST` | `/api/workspace/channels` | *not in contract — bootstrap helper* |
@@ -132,10 +135,6 @@ comment (`: heartbeat\n\n`) every 15s. All types match the openapi
   none is enabled yet. All tenant isolation is enforced in `app/auth.py`
   and routing helpers. Before exposing the DB to third-party integrations,
   enable RLS.
-- **Machine-token minting** — tokens must be created out-of-band today
-  (insert rows into `agent_machine_tokens` with the sha256 of the raw key).
-  Fleet API's provisioner should call a `/admin/tokens` endpoint here — not
-  yet implemented.
 - **Rate limiting** — contract specifies per-endpoint limits (60/min,
   120/min, etc). No enforcement yet; add a `slowapi`-backed middleware.
 
